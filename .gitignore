@@ -1,0 +1,14 @@
+.gradle/
+build/
+.kotlin/
+*.log
+.idea/
+*.iml
+.DS_Store
+
+# Local environment and generated output
+.env
+out/
+target/
+node_modules/
+dist/
