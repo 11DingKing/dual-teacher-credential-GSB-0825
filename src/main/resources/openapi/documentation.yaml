@@ -1,0 +1,240 @@
+openapi: 3.0.3
+info:
+  title: Dual-Teacher Credential Service
+  version: 1.0.0
+  description: >
+    双师型教师资历服务 API。
+    基于事件溯源，支持按业务时间投影、时间点资格判定、不可变决定快照。
+servers:
+  - url: http://localhost:8080
+    description: Local development
+paths:
+  /health:
+    get:
+      summary: 健康检查
+      operationId: health
+      responses:
+        '200':
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: UP
+                  service:
+                    type: string
+                    example: dual-teacher-credential
+                  timestamp:
+                    type: string
+                    format: date
+  /api/v1/events:
+    post:
+      summary: 接入来源事件（幂等）
+      operationId: appendEvent
+      description: >
+        提交一个全局唯一 event_id 的事件。重复 event_id 返回 200 而非 201。
+        事件按 occurred_at（业务发生时间）投影，而非服务器收到时间。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventRequest'
+      responses:
+        '201':
+          description: 事件已接受
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '200':
+          description: 事件已存在（幂等返回）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '400':
+          description: 请求无效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/teachers/{teacherId}/qualification:
+    get:
+      summary: 查询教师授课资格并保存不可变快照
+      operationId: getQualification
+      description: >
+        指定 as_of 日期查询教师是否具备某课程授课资格。
+        每次查询返回逐项结论、证据 ID 和缺失项，并以 decision_id 保存不可变快照。
+        以后补录的材料不能改变旧决定。
+      parameters:
+        - name: teacherId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: T1
+        - name: course_id
+          in: query
+          required: true
+          schema:
+            type: string
+          example: COURSE1
+        - name: as_of
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          example: '2026-04-30'
+      responses:
+        '200':
+          description: 资格判定结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QualificationResponse'
+        '400':
+          description: 参数无效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/decisions/{decisionId}:
+    get:
+      summary: 获取历史决定快照
+      operationId: getDecision
+      parameters:
+        - name: decisionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 决定快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionResponse'
+        '404':
+          description: 决定不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    EventRequest:
+      type: object
+      required: [eventId, eventType, aggregateId, occurredAt, payload]
+      properties:
+        eventId:
+          type: string
+          description: 全局唯一事件 ID
+          example: evt-teacher-created-1
+        eventType:
+          type: string
+          enum:
+            - TEACHER_CREATED
+            - PRACTICE_RECORDED
+            - CERTIFICATION_ISSUED
+            - CERTIFICATION_REVOKED
+            - PROJECT_RECORDED
+            - PROJECT_ACCEPTED
+            - MATRIX_PUBLISHED
+        aggregateId:
+          type: string
+          description: 聚合根 ID（教师事件为教师 ID，矩阵事件为课程 ID）
+          example: T1
+        occurredAt:
+          type: string
+          format: date
+          description: 业务发生时间（非服务器接收时间）
+          example: '2025-01-01'
+        payload:
+          type: object
+          description: 事件负载，结构随 eventType 变化
+          example:
+            name: 张老师
+    EventResponse:
+      type: object
+      properties:
+        eventId:
+          type: string
+        accepted:
+          type: boolean
+        message:
+          type: string
+    SnapshotItem:
+      type: object
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        status:
+          type: string
+          enum: [PASS, FAIL]
+        required:
+          type: string
+        actual:
+          type: string
+        evidenceIds:
+          type: array
+          items:
+            type: string
+        missing:
+          type: string
+          nullable: true
+    QualificationResponse:
+      type: object
+      properties:
+        decisionId:
+          type: string
+          format: uuid
+        teacherId:
+          type: string
+        courseId:
+          type: string
+        asOf:
+          type: string
+          format: date
+        overallResult:
+          type: string
+          enum: [PASS, FAIL]
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotItem'
+    DecisionResponse:
+      type: object
+      properties:
+        decisionId:
+          type: string
+          format: uuid
+        teacherId:
+          type: string
+        courseId:
+          type: string
+        asOf:
+          type: string
+          format: date
+        overallResult:
+          type: string
+          enum: [PASS, FAIL]
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotItem'
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
