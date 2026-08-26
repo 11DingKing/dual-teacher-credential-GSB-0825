@@ -1,0 +1,321 @@
+openapi: 3.0.3
+info:
+  title: Dual-Teacher Credential Qualification Service
+  version: 1.0.0
+  description: |
+    “双师型”教师资历服务。以事件溯源方式记录教师、企业实践区间、认证签发/吊销、
+    产业项目角色与带版本的课程能力矩阵；排课人员可指定 as_of 日期查询教师是否
+    具备授课资格，每次判定保存不可变快照（decision_id），补录材料不回溯修改旧决定。
+
+    业务口径：
+    - 企业实践区间起止日均计入，重叠/相接区间合并后只算一次；
+    - 认证在 as_of 当天须已签发、未到期，且没有被 effective_date <= as_of 的吊销覆盖；
+    - 产业项目须经企业验收（accepted_by_enterprise=true 且验收日期不晚于 as_of）；
+    - 矩阵按 effective_from <= as_of 的最新版本判定；
+    - 事件按 event_id 幂等，乱序到达不影响按业务时间的判定。
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: system
+  - name: events
+  - name: qualifications
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: 健康检查（含数据库连通性）
+      responses:
+        '200':
+          description: 服务与数据库正常
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+        '503':
+          description: 数据库不可用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+
+  /events:
+    post:
+      tags: [events]
+      summary: 摄入来源事件（幂等）
+      description: |
+        event_id 全局唯一：同一 event_id 重复提交返回 status=duplicate 且不重复投影。
+        事件可乱序到达（例如吊销先于签发），资格判定按业务时间进行。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventRequest' }
+            examples:
+              teacher:
+                summary: 注册教师
+                value:
+                  event_id: e-001
+                  event_type: TEACHER_REGISTERED
+                  payload: { teacher_id: T1, name: 张三 }
+              practice:
+                summary: 企业实践区间
+                value:
+                  event_id: e-002
+                  event_type: ENTERPRISE_PRACTICE_RECORDED
+                  payload: { teacher_id: T1, company: ACME, start_date: '2025-01-01', end_date: '2025-03-01' }
+              revocation:
+                summary: 认证吊销（可先于签发到达）
+                value:
+                  event_id: e-004
+                  event_type: CERTIFICATION_REVOKED
+                  payload: { cert_code: C1, effective_date: '2026-05-01', reason: annual audit }
+              matrix:
+                summary: 发布课程能力矩阵
+                value:
+                  event_id: e-007
+                  event_type: COURSE_MATRIX_PUBLISHED
+                  payload:
+                    course_id: COURSE-1
+                    version: 1
+                    effective_from: '2025-01-01'
+                    requirements:
+                      min_practice_days: 90
+                      required_certifications: [C1]
+                      required_project_roles: [MENTOR]
+      responses:
+        '200':
+          description: 已记录或幂等重复
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestResponse' }
+        '400':
+          description: 载荷非法（缺字段、未知教师、日期颠倒等）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /teachers/{teacherId}/qualifications:
+    get:
+      tags: [qualifications]
+      summary: 按 as_of 查询授课资格（get-or-create 不可变快照）
+      parameters:
+        - name: teacherId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: course_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: as_of
+          in: query
+          required: true
+          schema: { type: string, format: date }
+          description: 判定基准日（YYYY-MM-DD）
+      responses:
+        '200':
+          description: 逐项判定结论与证据；created 表示本次是否新建快照
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecisionResponse' }
+        '400':
+          description: 参数缺失或日期非法
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: 教师不存在或 as_of 当天无生效的课程矩阵
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /teachers/{teacherId}/portfolio:
+    get:
+      tags: [qualifications]
+      summary: 教师资历档案（证据清单，含 event_id 溯源）
+      parameters:
+        - name: teacherId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 全部实践、认证、吊销、项目记录
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PortfolioResponse' }
+        '404':
+          description: 教师不存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /decisions/{decisionId}:
+    get:
+      tags: [qualifications]
+      summary: 读取判定快照（不可变）
+      parameters:
+        - name: decisionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 判定快照
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecisionResponse' }
+        '400':
+          description: decisionId 不是 UUID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: 快照不存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [UP, DOWN] }
+
+    EventRequest:
+      type: object
+      required: [event_id, event_type, payload]
+      properties:
+        event_id:
+          type: string
+          description: 全局唯一事件 ID（幂等键）
+        event_type:
+          type: string
+          enum:
+            - TEACHER_REGISTERED
+            - ENTERPRISE_PRACTICE_RECORDED
+            - CERTIFICATION_ISSUED
+            - CERTIFICATION_REVOKED
+            - INDUSTRY_PROJECT_RECORDED
+            - COURSE_MATRIX_PUBLISHED
+        occurred_at:
+          type: string
+          format: date-time
+          description: 业务发生时间（可选元数据；判定只使用 payload 内的业务日期）
+        payload:
+          type: object
+          description: 各事件类型的业务载荷（见 examples）
+
+    IngestResponse:
+      type: object
+      properties:
+        event_id: { type: string }
+        status: { type: string, enum: [recorded, duplicate] }
+
+    Requirements:
+      type: object
+      properties:
+        min_practice_days: { type: integer, minimum: 0 }
+        required_certifications:
+          type: array
+          items: { type: string }
+        required_project_roles:
+          type: array
+          items: { type: string }
+
+    DecisionItem:
+      type: object
+      properties:
+        type: { type: string, enum: [practice, certification, project_role] }
+        subject:
+          type: string
+          description: enterprise_practice / 认证代码 / 项目角色
+        status: { type: string, enum: [PASS, FAIL] }
+        required: { type: string }
+        actual: { type: string }
+        reason_code:
+          type: string
+          enum: [PRACTICE_DAYS_INSUFFICIENT, CERT_NOT_ISSUED, CERT_EXPIRED, CERT_REVOKED, PROJECT_NOT_ACCEPTED]
+        missing:
+          type: string
+          description: 缺口说明（FAIL 时给出）
+        evidence_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: 判定采用的证据记录 ID（可用 /teachers/{id}/portfolio 对照）
+
+    DecisionResponse:
+      type: object
+      properties:
+        decision_id: { type: string, format: uuid }
+        teacher_id: { type: string }
+        course_id: { type: string }
+        as_of: { type: string, format: date }
+        matrix_version: { type: integer }
+        qualified: { type: boolean }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/DecisionItem' }
+        created_at: { type: string, format: date-time }
+        created:
+          type: boolean
+          description: 本次调用是否新建了快照；false 表示返回既有不可变快照
+
+    PracticeEvidence:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        event_id: { type: string }
+        company: { type: string }
+        start_date: { type: string, format: date }
+        end_date: { type: string, format: date }
+
+    CertificationEvidence:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        event_id: { type: string }
+        cert_code: { type: string }
+        issued_date: { type: string, format: date }
+        expiry_date: { type: string, format: date }
+
+    RevocationEvidence:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        event_id: { type: string }
+        cert_code: { type: string }
+        effective_date: { type: string, format: date }
+        reason: { type: string }
+
+    ProjectEvidence:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        event_id: { type: string }
+        project_name: { type: string }
+        role: { type: string }
+        accepted_by_enterprise: { type: boolean }
+        acceptance_date: { type: string, format: date }
+
+    PortfolioResponse:
+      type: object
+      properties:
+        teacher_id: { type: string }
+        practices:
+          type: array
+          items: { $ref: '#/components/schemas/PracticeEvidence' }
+        certifications:
+          type: array
+          items: { $ref: '#/components/schemas/CertificationEvidence' }
+        revocations:
+          type: array
+          items: { $ref: '#/components/schemas/RevocationEvidence' }
+        projects:
+          type: array
+          items: { $ref: '#/components/schemas/ProjectEvidence' }
+
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
