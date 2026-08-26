@@ -1,0 +1,214 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "双师型教师资历服务",
+    "description": "高风险实践课排课前，按 as_of 基准日期综合判断教师的企业实践时长、设备认证、产业项目经历与课程能力矩阵。事件按业务发生时间投影（乱序安全），event_id 全局唯一且幂等，每次查询生成不可变 decision_id 快照。",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/events": {
+      "post": {
+        "summary": "接入来源事件（幂等）",
+        "description": "event_id 全局唯一；重复投递返回 duplicate=true 且不重复落库。eventType 取值：teacher.registered / practice.recorded / cert.issued / cert.revoked / project.role.assigned / project.accepted / matrix.published。occurredAt 为业务发生时间（yyyy-MM-dd 或 ISO-8601 时刻），与到达顺序无关。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/EventEnvelope" },
+              "examples": {
+                "practice": {
+                  "value": {
+                    "eventId": "3b1d2c4e-0000-4000-8000-000000000001",
+                    "eventType": "practice.recorded",
+                    "occurredAt": "2025-04-02T09:00:00Z",
+                    "payload": {
+                      "teacherId": "T1",
+                      "startDate": "2025-02-15",
+                      "endDate": "2025-04-01",
+                      "enterprise": "华东数控有限公司"
+                    }
+                  }
+                },
+                "certIssued": {
+                  "value": {
+                    "eventId": "3b1d2c4e-0000-4000-8000-000000000003",
+                    "eventType": "cert.issued",
+                    "occurredAt": "2025-06-01T10:00:00Z",
+                    "payload": {
+                      "teacherId": "T1",
+                      "certId": "C1",
+                      "certType": "EQUIPMENT",
+                      "issuedOn": "2025-06-01",
+                      "expiresOn": "2026-06-30",
+                      "issuingBody": "装备制造行业协会"
+                    }
+                  }
+                },
+                "certRevoked": {
+                  "value": {
+                    "eventId": "3b1d2c4e-0000-4000-8000-000000000004",
+                    "eventType": "cert.revoked",
+                    "occurredAt": "2026-04-20T08:00:00Z",
+                    "payload": {
+                      "teacherId": "T1",
+                      "certId": "C1",
+                      "effectiveOn": "2026-05-01",
+                      "reason": "设备安全抽查不合格"
+                    }
+                  }
+                },
+                "matrix": {
+                  "value": {
+                    "eventId": "3b1d2c4e-0000-4000-8000-000000000007",
+                    "eventType": "matrix.published",
+                    "occurredAt": "2024-12-15T00:00:00Z",
+                    "payload": {
+                      "version": "v1",
+                      "courseCode": "HRP-101",
+                      "courseName": "高风险数控加工实践",
+                      "effectiveFrom": "2025-01-01",
+                      "requiredPracticeDays": 90,
+                      "requiredCertTypes": ["EQUIPMENT"],
+                      "requiredAcceptedProjects": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "新事件已落库",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IngestResponse" } } }
+          },
+          "200": {
+            "description": "重复事件（幂等返回）",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IngestResponse" } } }
+          },
+          "400": {
+            "description": "事件非法（未知类型、UUID 格式错误、payload 不符）",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/teachers/{teacherId}/qualification": {
+      "get": {
+        "summary": "按基准日期查询教师授课资格（生成不可变快照）",
+        "description": "以 asOf 为判断基准：重叠企业实践区间合并计天；认证当日必须有效且未被已生效吊销覆盖；产业项目须经企业验收；能力矩阵取当日生效的最新版本。同一 (teacherId, course, asOf) 的重复/并发请求返回同一 decision_id；快照生成后不受后续补录事件影响。",
+        "parameters": [
+          { "name": "teacherId", "in": "path", "required": true, "schema": { "type": "string" }, "example": "T1" },
+          { "name": "course", "in": "query", "required": true, "schema": { "type": "string" }, "example": "HRP-101" },
+          { "name": "asOf", "in": "query", "required": true, "description": "判断基准日期 yyyy-MM-dd（也兼容 as_of）", "schema": { "type": "string", "format": "date" }, "example": "2026-04-30" }
+        ],
+        "responses": {
+          "200": {
+            "description": "资格决定快照",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DecisionSnapshot" } } }
+          },
+          "400": { "description": "参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "教师不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/v1/decisions/{decisionId}": {
+      "get": {
+        "summary": "读取历史资格决定（不可变快照）",
+        "parameters": [
+          { "name": "decisionId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "决定快照",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DecisionSnapshot" } } }
+          },
+          "404": { "description": "决定不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "存活检查",
+        "responses": { "200": { "description": "服务存活", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthResponse" } } } } }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "summary": "就绪检查（探测数据库）",
+        "responses": {
+          "200": { "description": "数据库可用", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthResponse" } } } },
+          "503": { "description": "数据库不可用", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthResponse" } } } }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "OpenAPI 规范",
+        "responses": { "200": { "description": "本规范文档" } }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "EventEnvelope": {
+        "type": "object",
+        "required": ["eventId", "eventType", "occurredAt", "payload"],
+        "properties": {
+          "eventId": { "type": "string", "format": "uuid", "description": "全局唯一事件 ID（幂等键）" },
+          "eventType": { "type": "string", "enum": ["teacher.registered", "practice.recorded", "cert.issued", "cert.revoked", "project.role.assigned", "project.accepted", "matrix.published"] },
+          "occurredAt": { "type": "string", "description": "业务发生时间：yyyy-MM-dd 或 ISO-8601 时刻" },
+          "teacherId": { "type": "string", "nullable": true },
+          "payload": { "type": "object", "description": "事件负载，结构随 eventType 而定", "additionalProperties": true }
+        }
+      },
+      "IngestResponse": {
+        "type": "object",
+        "properties": {
+          "eventId": { "type": "string" },
+          "duplicate": { "type": "boolean", "description": "true 表示该 event_id 已存在，本次为幂等重试" }
+        }
+      },
+      "DecisionSnapshot": {
+        "type": "object",
+        "properties": {
+          "decisionId": { "type": "string", "format": "uuid", "description": "不可变快照 ID" },
+          "teacherId": { "type": "string" },
+          "courseCode": { "type": "string" },
+          "asOf": { "type": "string", "format": "date" },
+          "matrixVersion": { "type": "string", "nullable": true },
+          "result": { "type": "string", "enum": ["QUALIFIED", "NOT_QUALIFIED"] },
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/DecisionItem" }
+          },
+          "evaluatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "DecisionItem": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string", "description": "MATRIX / PRACTICE / CERT_<类型> / PROJECT" },
+          "status": { "type": "string", "enum": ["PASS", "FAIL"] },
+          "message": { "type": "string", "description": "结论说明" },
+          "evidenceIds": { "type": "array", "items": { "type": "string" }, "description": "采用的证据事件 ID / 证件 ID" },
+          "missing": { "type": "string", "nullable": true, "description": "仍缺什么（FAIL 时给出）" }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "enum": ["UP", "DOWN"] },
+          "database": { "type": "string", "nullable": true, "enum": ["UP", "DOWN"] }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  }
+}

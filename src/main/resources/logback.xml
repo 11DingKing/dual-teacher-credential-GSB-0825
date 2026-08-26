@@ -1,0 +1,22 @@
+<configuration>
+    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdcKeyName>requestId</includeMdcKeyName>
+            <includeMdcKeyName>teacherId</includeMdcKeyName>
+            <includeMdcKeyName>decisionId</includeMdcKeyName>
+            <includeMdcKeyName>eventId</includeMdcKeyName>
+            <fieldNames>
+                <timestamp>timestamp</timestamp>
+                <version>[ignore]</version>
+            </fieldNames>
+        </encoder>
+    </appender>
+
+    <logger name="io.netty" level="WARN"/>
+    <logger name="org.flywaydb" level="INFO"/>
+    <logger name="Exposed" level="WARN"/>
+
+    <root level="INFO">
+        <appender-ref ref="JSON_CONSOLE"/>
+    </root>
+</configuration>
