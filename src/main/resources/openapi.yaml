@@ -1,0 +1,151 @@
+openapi: 3.0.3
+info:
+  title: Dual-Teacher Credential Service
+  version: 1.0.0
+  description: >
+    Determines whether a teacher genuinely holds the credentials to teach a high-risk
+    practical course as of a given date, aggregating enterprise practice, equipment
+    certifications, industry-project experience and the versioned competency matrix.
+    Qualification is projected from source events by business time (not receipt order),
+    and every query yields an immutable, per-item decision snapshot.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Liveness/readiness probe (checks a database round-trip)
+      responses:
+        "200":
+          description: Service and database are up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: UP }
+                  database: { type: string, example: UP }
+        "503":
+          description: Database unreachable
+  /events:
+    post:
+      summary: Ingest a source event (idempotent on event_id)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventEnvelope"
+      responses:
+        "200":
+          description: Event stored or duplicate ignored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppendEventResponse"
+        "400":
+          description: Malformed event
+  /teachers/{teacherId}/qualification:
+    get:
+      summary: Evaluate a teacher's qualification for a course as of a date
+      parameters:
+        - name: teacherId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: course_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: as_of
+          in: query
+          required: true
+          description: Evaluation baseline date (ISO YYYY-MM-DD)
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Immutable qualification decision snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QualificationDecision"
+        "400":
+          description: Missing or invalid parameters
+  /decisions/{decisionId}:
+    get:
+      summary: Retrieve a previously recorded immutable decision snapshot
+      parameters:
+        - name: decisionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The stored decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QualificationDecision"
+        "404":
+          description: No such decision
+components:
+  schemas:
+    EventEnvelope:
+      type: object
+      required: [event_id, occurred_at, payload]
+      properties:
+        event_id:
+          type: string
+          description: Globally unique idempotency key
+        occurred_at:
+          type: string
+          format: date-time
+          description: Business time the fact occurred (drives projection order)
+        payload:
+          $ref: "#/components/schemas/EventPayload"
+    EventPayload:
+      type: object
+      description: >
+        Polymorphic on the `type` discriminator. One of TeacherRegistered,
+        PracticeRecorded, CertificationIssued, CertificationRevoked,
+        IndustryProjectRoleRecorded, CompetencyMatrixPublished.
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum:
+            - TeacherRegistered
+            - PracticeRecorded
+            - CertificationIssued
+            - CertificationRevoked
+            - IndustryProjectRoleRecorded
+            - CompetencyMatrixPublished
+      additionalProperties: true
+    AppendEventResponse:
+      type: object
+      properties:
+        event_id: { type: string }
+        stored: { type: boolean }
+        message: { type: string }
+    CheckResult:
+      type: object
+      properties:
+        requirement: { type: string }
+        status: { type: string, enum: [PASS, FAIL] }
+        detail: { type: string }
+        evidence_event_ids:
+          type: array
+          items: { type: string }
+        missing: { type: string, nullable: true }
+    QualificationDecision:
+      type: object
+      properties:
+        decision_id: { type: string }
+        teacher_id: { type: string }
+        course_id: { type: string }
+        as_of: { type: string, format: date }
+        qualified: { type: boolean }
+        matrix_version: { type: integer, nullable: true }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/CheckResult" }
+        decided_at: { type: string, format: date-time }
